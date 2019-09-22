@@ -207,8 +207,6 @@ class TanhGaussianPolicySOP(Mlp):
         beta=None,
         SOP=False,
         mod1=False,
-        mod2=False,
-        mod3=False,
         sigma=None
         ):
         """
@@ -231,8 +229,6 @@ class TanhGaussianPolicySOP(Mlp):
                                      beta=beta,
                                      SOP=SOP,
                                      mod1=mod1,
-                                     mod2=mod2,
-                                     mod3=mod3,
                                      sigma=sigma)[0].detach()
         ## convert action into the form that can put into the env and scale it
 
@@ -249,8 +245,6 @@ class TanhGaussianPolicySOP(Mlp):
             beta=None,
             SOP=False,
             mod1=False,
-            mod2=False,
-            mod3=False,
             sigma=None
     ):
         """
@@ -280,29 +274,29 @@ class TanhGaussianPolicySOP(Mlp):
             zeros = torch.zeros(mean.size())
             normal = Normal(zeros, std)
             K = torch.tensor(mean.size()[1])
-            if mod2:
-                Gs = torch.norm(mean, p=2, dim=1).view(-1,1)
-                Gs = Gs/K
-                Gs = Gs/beta
-                mean = mean/Gs
-            elif mod3:
-                Gs = torch.norm(mean, p=2, dim=1).view(-1,1)
-                Gs = Gs/K
-                Gs = Gs/beta
+            # if mod2:
+            #     Gs = torch.norm(mean, p=2, dim=1).view(-1,1)
+            #     Gs = Gs/K
+            #     Gs = Gs/beta
+            #     mean = mean/Gs
+            # elif mod3:
+            #     Gs = torch.norm(mean, p=2, dim=1).view(-1,1)
+            #     Gs = Gs/K
+            #     Gs = Gs/beta
+            #     ones = torch.ones(Gs.size())
+            #     Gs_mod3 = torch.where(Gs >= 1, Gs, ones)
+            #     mean = mean/Gs_mod3
+            # else:
+            abs_mean = torch.abs(mean)
+            Gs = torch.sum(abs_mean, dim=1).view(-1,1) ######
+            Gs = Gs/K
+            Gs = Gs/beta
+            if mod1:
                 ones = torch.ones(Gs.size())
-                Gs_mod3 = torch.where(Gs >= 1, Gs, ones)
-                mean = mean/Gs_mod3
+                Gs_mod1 = torch.where(Gs >= 1, Gs, ones)
+                mean = mean/Gs_mod1
             else:
-                abs_mean = torch.abs(mean)
-                Gs = torch.sum(abs_mean, dim=1).view(-1,1) ######
-                Gs = Gs/K
-                Gs = Gs/beta
-                if mod1:
-                    ones = torch.ones(Gs.size())
-                    Gs_mod1 = torch.where(Gs >= 1, Gs, ones)
-                    mean = mean/Gs_mod1
-                else:
-                    mean = mean/Gs
+                mean = mean/Gs
         else:
             normal = Normal(mean, std)
 
