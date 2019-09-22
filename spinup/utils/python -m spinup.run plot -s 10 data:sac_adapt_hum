@@ -1,0 +1,1 @@
+python -m spinup.run plot -s 10 data/sac_adapt_humanoid-v2/ data/SOP_humanoid-v2/ data/SOP_hard_clip_humanoid-v2/ data/SOP_hard_clip_humanoid-v2_beta_1-1/ data/SOP_hard_clip_humanoid-v2_beta_1-3/ data/SOP_hard_clip_humanoid-v2_beta_1-5/
