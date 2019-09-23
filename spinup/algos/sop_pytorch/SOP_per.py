@@ -8,19 +8,113 @@ import time
 from spinup.algos.sac_pytorch.SOP_core_auto import TanhGaussianPolicySACAdapt, Mlp, soft_update_model1_with_model2, ReplayBuffer
 from spinup.utils.logx import EpochLogger
 from spinup.utils.run_utils import setup_logger_kwargs
+from spinup.algos.sac_pytorch.core_per import SegmentTree, SumSegmentTree, MinSegmentTree
+import random
+import sys
+"""
+SOP with PER
+"""
 
-"""
-This one is the auto alpha version we now use, it doesn't do reparam action
-This one probably will work??
-From early results it seems that this one actually works
-The results look similar to the results in the paper
-"""
+class PrioritizedReplayMemory(object):
+    ## modified from: https://github.com/qfettes/DeepRL-Tutorials
+    def __init__(self, size, alpha, beta_start, beta_frames):
+        super(PrioritizedReplayMemory, self).__init__()
+        self._storage = []
+        self._maxsize = size
+        self._next_idx = 0
+
+        assert alpha >= 0
+        self._alpha = alpha
+
+        self.beta_start = beta_start
+        self.beta_frames = beta_frames
+        self.frame = 1
+
+        it_capacity = 1
+        while it_capacity < size:
+            it_capacity *= 2
+
+        self._it_sum = SumSegmentTree(it_capacity)
+        self._it_min = MinSegmentTree(it_capacity)
+        self._max_priority = 1.0
+
+    def beta_by_frame(self, frame_idx):
+        return min(1.0, self.beta_start + frame_idx * (1.0 - self.beta_start) / self.beta_frames)
+
+    def push(self, data):
+        ## when push data will not specify priority value
+        idx = self._next_idx
+
+        if self._next_idx >= len(self._storage):
+            self._storage.append(data)
+        else:
+            self._storage[self._next_idx] = data
+        self._next_idx = (self._next_idx + 1) % self._maxsize
+
+        self._it_sum[idx] = self._max_priority ** self._alpha
+        self._it_min[idx] = self._max_priority ** self._alpha
+
+    def _encode_sample(self, idxes):
+        return [self._storage[i] for i in idxes]
+
+    def _sample_proportional(self, batch_size):
+        res = []
+        for _ in range(batch_size):
+            mass = random.random() * self._it_sum.sum(0, len(self._storage) - 1)
+            idx = self._it_sum.find_prefixsum_idx(mass)
+            res.append(idx)
+        return res
+
+    def sample(self, batch_size):
+        idxes = self._sample_proportional(batch_size)
+
+        weights = []
+
+        # find smallest sampling prob: p_min = smallest priority^alpha / sum of priorities^alpha
+        p_min = self._it_min.min() / self._it_sum.sum()
+
+        beta = self.beta_by_frame(self.frame)
+        self.frame += 1
+
+        # max_weight given to smallest prob
+        max_weight = (p_min * len(self._storage)) ** (-beta)
+
+        for idx in idxes:
+            p_sample = self._it_sum[idx] / self._it_sum.sum()
+            weight = (p_sample * len(self._storage)) ** (-beta)
+            weights.append(weight / max_weight)
+        encoded_sample = self._encode_sample(idxes)
+        return encoded_sample, idxes, weights
+
+    def update_priorities(self, idxes, priorities):
+        assert len(idxes) == len(priorities)
+        for idx, priority in zip(idxes, priorities):
+            assert 0 <= idx < len(self._storage)
+            self._it_sum[idx] = (priority + 1e-5) ** self._alpha
+            self._it_min[idx] = (priority + 1e-5) ** self._alpha
+
+            self._max_priority = max(self._max_priority, (priority + 1e-5))
+
+    def get_minibatch(self, batch_size):
+        # random transition batch is taken from experience replay memory
+        transitions, indices, weights = self.sample(batch_size)
+
+        batch_state, batch_action, batch_reward, batch_next_state, batch_done = zip(*transitions)
+
+        batch_state = Tensor(batch_state).reshape(batch_size,-1)
+        batch_action = Tensor(batch_action).reshape(batch_size,-1)
+        batch_reward = Tensor(batch_reward).reshape(batch_size,-1)
+        batch_next_state = Tensor(batch_next_state).reshape(batch_size,-1)
+        batch_done = Tensor(batch_done).reshape(batch_size,-1)
+
+        return batch_state, batch_action, batch_reward, \
+               batch_next_state, batch_done, indices, weights
 
 def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
               steps_per_epoch=5000, epochs=100, replay_size=int(1e6), gamma=0.99,
               polyak=0.995, lr=3e-4, alpha=0, beta=1.2, batch_size=256, start_steps=10000,
-              max_ep_len=1000, save_freq=1, dont_save=False, regularization_weight=1e-3,
-              auto_alpha=False,
+              max_ep_len=1000, save_freq=1, dont_save=False,
+              PER_alpha=0.6, PER_beta_start=0.4, logger_store_freq=500,
               logger_kwargs=dict(),):
     """
     Largely following OpenAI documentation
@@ -77,10 +171,14 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
         logger_kwargs (dict): Keyword args for EpochLogger.
 
     """
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    print("running on device:" ,device)
 
     """set up logger"""
     logger = EpochLogger(**logger_kwargs)
     logger.save_config(locals())
+    total_steps = steps_per_epoch * epochs
 
     env, test_env = env_fn(), env_fn()
 
@@ -93,6 +191,7 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
     env.action_space.np_random.seed(seed)
     test_env.seed(seed)
     test_env.action_space.np_random.seed(seed)
+    random.seed(seed)
 
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
@@ -104,24 +203,9 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
     # we need .item() to convert it from numpy float to python float
     act_limit = env.action_space.high[0].item()
 
-    # Experience buffer
-    replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
-
-    """
-    Auto tuning alpha
-    """
-    #remove_entropy = True
-    #auto_alpha = False
-    #if remove_entropy:
-    #    alpha = 0
-    #    target_entropy, log_alpha, alpha_optim = None, None, None
-    #else:
-    #    if auto_alpha:
-    #        target_entropy =  -np.prod(env.action_space.shape).item() # H
-    #        log_alpha = torch.zeros(1, requires_grad=True)
-    #        alpha_optim = optim.Adam([log_alpha], lr=lr)
-    #    else:
-    #        target_entropy, log_alpha, alpha_optim = None, None, None
+    # Experience buffer with PER proportional priority scheme
+    replay_buffer = PrioritizedReplayMemory(replay_size, alpha=PER_alpha,
+                                            beta_start=PER_beta_start, beta_frames=total_steps)
 
     def test_agent(n=5):
         """
@@ -148,12 +232,12 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
 
     """init all networks"""
     # see line 1
-    policy_net = TanhGaussianPolicySACAdapt(obs_dim, act_dim, hidden_sizes, action_limit=act_limit)
-    q1_net = Mlp(obs_dim+act_dim,1,hidden_sizes)
-    q2_net = Mlp(obs_dim+act_dim,1,hidden_sizes)
+    policy_net = TanhGaussianPolicySACAdapt(obs_dim, act_dim, hidden_sizes, action_limit=act_limit, device=device).to(device)
+    q1_net = Mlp(obs_dim+act_dim,1,hidden_sizes).to(device)
+    q2_net = Mlp(obs_dim+act_dim,1,hidden_sizes).to(device)
 
-    q1_target_net = Mlp(obs_dim+act_dim,1,hidden_sizes)
-    q2_target_net = Mlp(obs_dim+act_dim,1,hidden_sizes)
+    q1_target_net = Mlp(obs_dim+act_dim,1,hidden_sizes).to(device)
+    q2_target_net = Mlp(obs_dim+act_dim,1,hidden_sizes).to(device)
 
     # see line 2: copy parameters from value_net to target_value_net
     q1_target_net.load_state_dict(q1_net.state_dict())
@@ -166,10 +250,12 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
 
     # mean squared error loss for v and q networks
     mse_criterion = nn.MSELoss()
-
+    mse_criterion_no_reduction = nn.MSELoss(reduce=False)
     # Main loop: collect experience in env and update/log each epoch
     # NOTE: t here is the current number of total timesteps used
     # it is not the number of timesteps passed in the current episode
+    current_update_index = 0
+    sys.stdout.flush()
     for t in range(total_steps):
         """
         Until start_steps have elapsed, randomly sample actions
@@ -192,7 +278,8 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
         d = False if ep_len == max_ep_len else d
 
         # Store experience (observation, action, reward, next observation, done) to replay buffer
-        replay_buffer.store(o, a, r, o2, d)
+        data = [o, a, r, o2, d]
+        replay_buffer.push(data)
 
         # Super critical, easy to overlook step: make sure to update
         # most recent observation!
@@ -208,14 +295,15 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
             """
             for j in range(ep_len):
                 # get data from replay buffer
-                batch = replay_buffer.sample_batch(batch_size)
-                obs_tensor =  Tensor(batch['obs1'])
-                obs_next_tensor =  Tensor(batch['obs2'])
-                acts_tensor =  Tensor(batch['acts'])
-                # unsqueeze is to make sure rewards and done tensors are of the shape nx1, instead of n
-                # to prevent problems later
-                rews_tensor =  Tensor(batch['rews']).unsqueeze(1)
-                done_tensor =  Tensor(batch['done']).unsqueeze(1)
+                obs_tensor, acts_tensor, rews_tensor, obs_next_tensor, done_tensor, batch_idxs, batch_weights \
+                    = replay_buffer.get_minibatch(batch_size)
+                obs_tensor =obs_tensor.to(device)
+                acts_tensor = acts_tensor.to(device)
+                rews_tensor=rews_tensor.to(device)
+                obs_next_tensor=obs_next_tensor.to(device)
+                done_tensor=done_tensor.to(device)
+
+                batch_weights = Tensor(batch_weights).reshape(batch_size, 1).to(device)
 
                 """
                 now we do a SAC update, following the OpenAI spinup doc
@@ -228,31 +316,48 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
 
                 """get q loss"""
                 with torch.no_grad():
-                    a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = policy_net.forward(obs_next_tensor, fixed_sigma=True, SOP=True, mod1=True, beta=beta)
-                    q1_next = q1_target_net(torch.cat([obs_next_tensor,a_tilda_next], 1))
-                    q2_next = q2_target_net(torch.cat([obs_next_tensor,a_tilda_next], 1))
+                    a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = policy_net.forward(obs_next_tensor,
+                                                                                         fixed_sigma=True, SOP=True,
+                                                                                         mod1=True, beta=beta)
+                    q1_next = q1_target_net(torch.cat([obs_next_tensor, a_tilda_next], 1))
+                    q2_next = q2_target_net(torch.cat([obs_next_tensor, a_tilda_next], 1))
 
-                    min_next_q = torch.min(q1_next,q2_next)
-                    y_q = rews_tensor + gamma*(1-done_tensor)*min_next_q
+                    min_next_q = torch.min(q1_next, q2_next)
+                    y_q = rews_tensor + gamma * (1 - done_tensor) * min_next_q
 
                 # JQ = 𝔼(st,at)~D[0.5(Q1(st,at) - r(st,at) - γ(𝔼st+1~p[V(st+1)]))^2]
                 q1_prediction = q1_net(torch.cat([obs_tensor, acts_tensor], 1))
-                q1_loss = mse_criterion(q1_prediction, y_q)
+                q1_loss = (mse_criterion_no_reduction(q1_prediction, y_q) * batch_weights).mean()
+
                 q2_prediction = q2_net(torch.cat([obs_tensor, acts_tensor], 1))
-                q2_loss = mse_criterion(q2_prediction, y_q)
+                q2_loss = (mse_criterion_no_reduction(q2_prediction, y_q) * batch_weights).mean()
+
+                # q1_loss = mse_criterion(q1_prediction, y_q)
+                # q2_loss = mse_criterion(q2_prediction, y_q)
 
                 """
                 get policy loss
                 """
-                a_tilda, mean_a_tilda, log_std_a_tilda, log_prob_a_tilda, _, _ = policy_net.forward(obs_tensor, fixed_sigma=True, deterministic=True, SOP=True, mod1=True, beta=beta)
+                a_tilda, mean_a_tilda, log_std_a_tilda, \
+                log_prob_a_tilda, _, _ = policy_net.forward(obs_tensor,
+                                                            fixed_sigma=True,
+                                                            deterministic=True,
+                                                            SOP=True, mod1=True,
+                                                            beta=beta)
 
                 # see line 12: second equation
-                q1_a_tilda = q1_net(torch.cat([obs_tensor,a_tilda],1))
-                q2_a_tilda = q2_net(torch.cat([obs_tensor,a_tilda],1))
-                min_q1_q2_a_tilda = torch.min(q1_a_tilda,q2_a_tilda)
+                q1_a_tilda = q1_net(torch.cat([obs_tensor, a_tilda], 1))
+                q2_a_tilda = q2_net(torch.cat([obs_tensor, a_tilda], 1))
+                min_q1_q2_a_tilda = torch.min(q1_a_tilda, q2_a_tilda)
 
                 # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
-                policy_loss = (- min_q1_q2_a_tilda).mean()
+                policy_loss = (- min_q1_q2_a_tilda * batch_weights).mean()
+
+                """
+                compute TD values
+                """
+                abs_td = ((q1_prediction.detach() - y_q).abs() +
+                          (q2_prediction.detach() - y_q).abs()) / 2
 
                 """update networks"""
                 q1_optimizer.zero_grad()
@@ -271,11 +376,18 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
                 soft_update_model1_with_model2(q1_target_net, q1_net, polyak)
                 soft_update_model1_with_model2(q2_target_net, q2_net, polyak)
 
-                # store diagnostic info to logger
-                logger.store(LossPi=policy_loss.item(), LossQ1=q1_loss.item(), LossQ2=q2_loss.item(),
-                             Q1Vals=q1_prediction.detach().numpy(),
-                             Q2Vals=q2_prediction.detach().numpy(),
-                             )
+                """
+                Here we can do the priority updates, use the average absolute TD error from 2 q networks
+                """
+                abs_td = abs_td.reshape(-1).cpu().numpy()
+                replay_buffer.update_priorities(batch_idxs, abs_td.tolist())
+                current_update_index += 1
+                if current_update_index % logger_store_freq == 0:
+                    # store diagnostic info to logger
+                    logger.store(LossPi=policy_loss.item(), LossQ1=q1_loss.item(), LossQ2=q2_loss.item(),
+                                 Q1Vals=q1_prediction.detach().cpu().numpy(),
+                                 Q2Vals=q2_prediction.detach().cpu().numpy(),
+                                 )
 
             ## store episode return and length to logger
             logger.store(EpRet=ep_ret, EpLen=ep_len)

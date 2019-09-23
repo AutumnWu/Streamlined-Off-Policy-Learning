@@ -200,17 +200,7 @@ class TanhGaussianPolicySACAdapt(Mlp):
         self.action_limit = action_limit
         self.apply(weights_init_)
 
-    def get_env_action(self, obs_np, 
-        deterministic=False, 
-        removed_tanh=False, 
-        fixed_sigma=False, 
-        clip_action=False, 
-        b=None, 
-        beta_action=False, 
-        beta=None,
-        SOP=False,
-        record_mu=False
-        ):
+    def get_env_action(self, obs_np, deterministic=False):
         """
         Get an action that can be used to forward one step in the environment
         :param obs_np: observation got from environment, in numpy form
@@ -221,53 +211,17 @@ class TanhGaussianPolicySACAdapt(Mlp):
         ## convert observations to pytorch tensors first
         ## and then use the forward method
         obs_tensor = torch.Tensor(obs_np).unsqueeze(0)
-        #if removed_tanh:
-        #    action_tensor = self.forward(obs_tensor, deterministic=deterministic,
-        #                             return_log_prob=False, fixed_sigma=fixed_sigma, removed_tanh=True)[0].detach()
-        #else:
-        if record_mu:
-            action, mean, _, _, _, pre_tanh_value = self.forward(obs_tensor, deterministic=deterministic, removed_tanh=removed_tanh, return_log_prob=False, 
-                                     fixed_sigma=fixed_sigma, clip_action=clip_action, b=b,
-                                     beta_action=beta_action, beta=beta,
-                                     SOP=SOP,
-                                     record_mu=record_mu)
-            action_tensor = action.detach()
-            mu = mean.detach().numpy()
-            pre_tanh_value = pre_tanh_value.detach().numpy()
-            action_np = action_tensor.numpy().reshape(-1)
-            return action_np, mu, pre_tanh_value
-        else:
-            action_tensor  = self.forward(obs_tensor, deterministic=deterministic, removed_tanh=removed_tanh, return_log_prob=False, 
-                                     fixed_sigma=fixed_sigma, clip_action=clip_action, b=b,
-                                     beta_action=beta_action, beta=beta,
-                                     SOP=SOP,
-                                     record_mu=record_mu)[0].detach()
+        action_tensor = self.forward(obs_tensor, deterministic=deterministic,
+                                     return_log_prob=False)[0].detach()
         ## convert action into the form that can put into the env and scale it
-
-            action_np = action_tensor.numpy().reshape(-1)
-            return action_np
+        action_np = action_tensor.numpy().reshape(-1)
+        return action_np
 
     def forward(
             self,
             obs,
-            batch_size = 256,
             deterministic=False,
             return_log_prob=True,
-            fixed_sigma=False,
-            removed_tanh=False,
-            closed_entropy=False,
-            tanh_entropy=False,
-            mu_l2=False,
-            mu_l1=False,
-            mu_l4=False,
-            entropy_net=None,
-            penal_a=False,
-            clip_action=False,
-            b=None,
-            beta_action=False,
-            beta=None,
-            SOP=False,
-            record_mu=False
     ):
         """
         :param obs: Observation
@@ -275,123 +229,34 @@ class TanhGaussianPolicySACAdapt(Mlp):
         :param deterministic: If True, do not sample
         :param return_log_prob: If True, return a sample and its log probability
         """
-
         h = obs
         for fc_layer in self.hidden_layers:
             h = self.hidden_activation(fc_layer(h))
         mean = self.last_fc_layer(h)
 
-        if fixed_sigma:
-            std = torch.zeros(mean.size())
-            std += 0.3
-            log_std = self.last_fc_log_std(h)
-            log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
+        log_std = self.last_fc_log_std(h)
+        log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
+        std = torch.exp(log_std)
 
-        else:
-            log_std = self.last_fc_log_std(h)
-            log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
-            std = torch.exp(log_std)
-
-        if clip_action:
-            zeros = torch.zeros(mean.size())
-            normal = Normal(zeros, std)
-            mean = torch.clamp(mean,min=-b,max=b)
-
-        elif beta_action:
-            zeros = torch.zeros(mean.size())
-            normal = Normal(zeros, std)
-            mean = mean/beta
-
-        elif SOP:
-            zeros = torch.zeros(mean.size())
-            normal = Normal(zeros, std)
-            K = torch.tensor(mean.size()[1])
-            abs_mean = torch.abs(mean)
-            Gs = torch.sum(abs_mean, dim=1).view(-1,1) ######
-            Gs = Gs/K
-            Gs = Gs/beta
-            mean = mean/Gs
-        else:
-            normal = Normal(mean, std)
-
-        if closed_entropy:
-            entropy = normal.entropy()
-            entropy = torch.sum(entropy, dim=1).view(-1,1)
-
-        if tanh_entropy:
-            pair = torch.stack((mean,std), 2).reshape(batch_size, -1, 2)
-            entropy = entropy_net(pair)
-            entropy = torch.sum(entropy, dim=1).view(-1,1)
-            #print (entropy.size())
-
-        if mu_l2:
-            entropy = - torch.norm(mean, dim=1).view(-1,1)
-
-        if mu_l1:
-            entropy = - torch.norm(mean, p=1, dim=1).view(-1,1)
-
-        if mu_l4:
-            entropy = - torch.norm(mean, p=4, dim=1).view(-1,1)
+        normal = Normal(mean, std)
 
         if deterministic:
             pre_tanh_value = mean
             action = torch.tanh(mean)
         else:
-            if clip_action:
-                pre_tanh_value = mean + normal.rsample()
-            elif beta_action:
-                pre_tanh_value = mean + normal.rsample()
-            elif SOP:
-                pre_tanh_value = mean + normal.rsample()
-            else:
-                pre_tanh_value = normal.rsample()
+            pre_tanh_value = normal.rsample()
             action = torch.tanh(pre_tanh_value)
-
-        if penal_a:
-            penalty = - torch.norm(pre_tanh_value, p=1, dim=1).view(-1,1)
 
         if return_log_prob:
             log_prob = normal.log_prob(pre_tanh_value)
-            if removed_tanh:
-                log_prob -= torch.log(1 - pre_tanh_value.pow(2) + ACTION_BOUND_EPSILON)
-            else:
-                log_prob -= torch.log(1 - action.pow(2) + ACTION_BOUND_EPSILON)
+            log_prob -= torch.log(1 - action.pow(2) + ACTION_BOUND_EPSILON)
             log_prob = log_prob.sum(1, keepdim=True)
         else:
             log_prob = None
 
-        if closed_entropy:
-            return (
-                action * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value, entropy
-            )
-        elif tanh_entropy:
-            return (
-                action * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value, entropy
-            )
-        elif removed_tanh:
-            return (
-                pre_tanh_value * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value,
-            )
-        elif mu_l1:
-            return (
-                action * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value, entropy
-            )
-        elif mu_l2:
-            return (
-                action * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value, entropy
-            )
-        elif mu_l4:
-            return (
-                action * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value, entropy
-            )
-        elif penal_a:
-            return (
-                action * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value, penalty
-            )
-        else:
-            return (
-                action * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value,
-            )
+        return (
+            action * self.action_limit, mean, log_std, log_prob, std, pre_tanh_value,
+        )
 
 
 def soft_update_model1_with_model2(model1, model2, rou):
