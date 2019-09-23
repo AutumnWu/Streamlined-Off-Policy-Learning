@@ -163,26 +163,15 @@ class Mlp(nn.Module):
         output = self.last_fc_layer(h)
         return output
 
-class TanhGaussianPolicySOP(Mlp):
-    """
-    TODO for this class, we might want to eventually combine
-    this with the TanhGaussianPolicy class
-    but for now let's just use it as a separate class
-    this class is only used in the SAC adapt version
-    (Though I think it might also help boost performance in our
-    old SAC)
-    The only difference is that we now do action squeeze and
-    compute action log prob using the method described in
-    "Enforcing Action Bounds" section of SAC adapt paper
-    """
-
+class TanhGaussianPolicySACAdapt(Mlp):
     def __init__(
             self,
             obs_dim,
             action_dim,
             hidden_sizes,
             hidden_activation=F.relu,
-            action_limit=1.0
+            action_limit=1.0,
+            device="cpu",
     ):
         super().__init__(
             input_size=obs_dim,
@@ -199,15 +188,18 @@ class TanhGaussianPolicySOP(Mlp):
         ## action limit: for example, humanoid has an action limit of -0.4 to 0.4
         self.action_limit = action_limit
         self.apply(weights_init_)
+        self.device = device
 
     def get_env_action(self, obs_np, 
         deterministic=False, 
         fixed_sigma=False, 
-        hard_clip=False,
         beta=None,
         SOP=False,
         mod1=False,
-        sigma=None
+        mod2=False,
+        mod3=False,
+        sigma=None,
+        fixed_sigma_value=0.3
         ):
         """
         Get an action that can be used to forward one step in the environment
@@ -218,21 +210,23 @@ class TanhGaussianPolicySOP(Mlp):
         """
         ## convert observations to pytorch tensors first
         ## and then use the forward method
-        obs_tensor = torch.Tensor(obs_np).unsqueeze(0)
+        obs_tensor = torch.Tensor(obs_np).unsqueeze(0).to(self.device)
+
         #if removed_tanh:
         #    action_tensor = self.forward(obs_tensor, deterministic=deterministic,
         #                             return_log_prob=False, fixed_sigma=fixed_sigma, removed_tanh=True)[0].detach()
         #else:
         action_tensor = self.forward(obs_tensor, deterministic=deterministic,
                                      fixed_sigma=fixed_sigma,
-                                     hard_clip=hard_clip,
                                      beta=beta,
                                      SOP=SOP,
                                      mod1=mod1,
-                                     sigma=sigma)[0].detach()
+                                     mod2=mod2,
+                                     mod3=mod3,
+                                     sigma=sigma, fixed_sigma_value=fixed_sigma_value)[0].detach()
         ## convert action into the form that can put into the env and scale it
 
-        action_np = action_tensor.numpy().reshape(-1)
+        action_np = action_tensor.cpu().numpy().reshape(-1)
         return action_np
 
     def forward(
@@ -241,11 +235,13 @@ class TanhGaussianPolicySOP(Mlp):
             batch_size = 256,
             deterministic=False,
             fixed_sigma=False,
-            hard_clip=False,
             beta=None,
             SOP=False,
             mod1=False,
-            sigma=None
+            mod2=False,
+            mod3=False,
+            sigma=None,
+            fixed_sigma_value=0.3
     ):
         """
         :param obs: Observation
@@ -260,8 +256,12 @@ class TanhGaussianPolicySOP(Mlp):
         mean = self.last_fc_layer(h)
 
         if fixed_sigma:
-            std = torch.zeros(mean.size())
-            std += sigma
+            if mod2:
+                std = torch.zeros(mean.size()).to(self.device)
+                std += sigma
+            else:
+                std = torch.zeros(mean.size()).to(self.device)
+                std += fixed_sigma_value
             log_std = None
             #log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
 
@@ -271,48 +271,44 @@ class TanhGaussianPolicySOP(Mlp):
             std = torch.exp(log_std)
 
         if SOP:
-            zeros = torch.zeros(mean.size())
+            zeros = torch.zeros(mean.size()).to(self.device)
             normal = Normal(zeros, std)
-            K = torch.tensor(mean.size()[1])
-            # if mod2:
-            #     Gs = torch.norm(mean, p=2, dim=1).view(-1,1)
-            #     Gs = Gs/K
-            #     Gs = Gs/beta
-            #     mean = mean/Gs
-            # elif mod3:
-            #     Gs = torch.norm(mean, p=2, dim=1).view(-1,1)
-            #     Gs = Gs/K
-            #     Gs = Gs/beta
-            #     ones = torch.ones(Gs.size())
-            #     Gs_mod3 = torch.where(Gs >= 1, Gs, ones)
-            #     mean = mean/Gs_mod3
-            # else:
-            abs_mean = torch.abs(mean)
-            Gs = torch.sum(abs_mean, dim=1).view(-1,1) ######
-            Gs = Gs/K
-            Gs = Gs/beta
-            if mod1:
-                ones = torch.ones(Gs.size())
-                Gs_mod1 = torch.where(Gs >= 1, Gs, ones)
-                mean = mean/Gs_mod1
-            else:
+            K = torch.tensor(mean.size()[1]).to(self.device)
+            if mod2:
+                Gs = torch.norm(mean, p=2, dim=1).view(-1,1)
+                Gs = Gs/K
+                Gs = Gs/beta
                 mean = mean/Gs
+            elif mod3:
+                Gs = torch.norm(mean, p=2, dim=1).view(-1,1)
+                Gs = Gs/K
+                Gs = Gs/beta
+                ones = torch.ones(Gs.size())
+                Gs_mod3 = torch.where(Gs >= 1, Gs, ones)
+                mean = mean/Gs_mod3
+            else:
+                abs_mean = torch.abs(mean)
+                Gs = torch.sum(abs_mean, dim=1).view(-1,1) ######
+                Gs = Gs/K
+                Gs = Gs/beta
+                if mod1:
+                    ones = torch.ones(Gs.size()).to(self.device)
+                    Gs_mod1 = torch.where(Gs >= 1, Gs, ones)
+                    mean = mean/Gs_mod1
+                else:
+                    mean = mean/Gs
         else:
             normal = Normal(mean, std)
 
 
         if deterministic:
             pre_tanh_value = mean
-            #action = torch.tanh(pre_tanh_value)
+            action = torch.tanh(mean)
         else:
             if SOP:
                 pre_tanh_value = mean + normal.rsample()
             else:
                 pre_tanh_value = normal.rsample()
-
-        if hard_clip:
-            action = torch.clamp(pre_tanh_value,min=-1,max=1)
-        else:
             action = torch.tanh(pre_tanh_value)
 
         log_prob = None
