@@ -5,7 +5,7 @@ from torch import Tensor
 import torch.nn as nn
 import torch.optim as optim
 import time
-from spinup.algos.sac_pytorch.SOP_core_auto import TanhGaussianPolicySACAdapt, Mlp, soft_update_model1_with_model2
+from spinup.algos.sop_pytorch.SOP_core_auto import TanhGaussianPolicySOP, Mlp, soft_update_model1_with_model2
 from spinup.utils.logx import EpochLogger
 from spinup.utils.run_utils import setup_logger_kwargs
 import sys
@@ -312,7 +312,7 @@ def sop_aere(env_fn, hidden_sizes=[256, 256], seed=0,
 
     """init all networks"""
     # see line 1
-    policy_net = TanhGaussianPolicySACAdapt(obs_dim, act_dim, hidden_sizes, action_limit=act_limit, device=device).to(device)
+    policy_net = TanhGaussianPolicySOP(obs_dim, act_dim, hidden_sizes, action_limit=act_limit, device=device).to(device)
     q1_net = Mlp(obs_dim+act_dim,1,hidden_sizes).to(device)
     q2_net = Mlp(obs_dim+act_dim,1,hidden_sizes).to(device)
 
@@ -544,7 +544,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--beta', type=int, default=1)
-    parser.add_argument('--exp_name', type=str, default='sac')
+    parser.add_argument('--exp_name', type=str, default='SOP')
     parser.add_argument('--data_dir', type=str, default='data/')
     parser.add_argument('--steps_per_epoch', type=int, default=5000)
     args = parser.parse_args()

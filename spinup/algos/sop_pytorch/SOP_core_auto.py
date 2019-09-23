@@ -163,7 +163,7 @@ class Mlp(nn.Module):
         output = self.last_fc_layer(h)
         return output
 
-class TanhGaussianPolicySACAdapt(Mlp):
+class TanhGaussianPolicySOP(Mlp):
     def __init__(
             self,
             obs_dim,

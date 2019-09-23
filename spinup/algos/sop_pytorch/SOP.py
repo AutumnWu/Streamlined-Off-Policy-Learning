@@ -5,7 +5,7 @@ from torch import Tensor
 import torch.nn as nn
 import torch.optim as optim
 import time
-from spinup.algos.sac_pytorch.SOP_core_auto import TanhGaussianPolicySACAdapt, Mlp, soft_update_model1_with_model2, ReplayBuffer
+from spinup.algos.sop_pytorch.SOP_core_auto import TanhGaussianPolicySOP, Mlp, soft_update_model1_with_model2, ReplayBuffer
 from spinup.utils.logx import EpochLogger
 from spinup.utils.run_utils import setup_logger_kwargs
 
@@ -16,7 +16,7 @@ From early results it seems that this one actually works
 The results look similar to the results in the paper
 """
 
-def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
+def sop(env_fn, hidden_sizes=[256, 256], seed=0,
               steps_per_epoch=5000, epochs=100, replay_size=int(1e6), gamma=0.99,
               polyak=0.995, lr=3e-4, alpha=0, beta=1.2, batch_size=256, start_steps=10000,
               max_ep_len=1000, save_freq=1, dont_save=False, regularization_weight=1e-3,
@@ -148,7 +148,7 @@ def sac_adapt(env_fn, hidden_sizes=[256, 256], seed=0,
 
     """init all networks"""
     # see line 1
-    policy_net = TanhGaussianPolicySACAdapt(obs_dim, act_dim, hidden_sizes, action_limit=act_limit)
+    policy_net = TanhGaussianPolicySOP(obs_dim, act_dim, hidden_sizes, action_limit=act_limit)
     q1_net = Mlp(obs_dim+act_dim,1,hidden_sizes)
     q2_net = Mlp(obs_dim+act_dim,1,hidden_sizes)
 
@@ -331,7 +331,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--beta', type=int, default=1)
-    parser.add_argument('--exp_name', type=str, default='sac')
+    parser.add_argument('--exp_name', type=str, default='SOP')
     parser.add_argument('--data_dir', type=str, default='data/')
     parser.add_argument('--steps_per_epoch', type=int, default=5000)
     args = parser.parse_args()
@@ -339,7 +339,7 @@ if __name__ == '__main__':
     from spinup.utils.run_utils import setup_logger_kwargs
     logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed)
 
-    sac_adapt(lambda: gym.make(args.env), hidden_sizes=[args.hid] * args.l,
+    sop(lambda: gym.make(args.env), hidden_sizes=[args.hid] * args.l,
               gamma=args.gamma, seed=args.seed, epochs=args.epochs,
               steps_per_epoch=args.steps_per_epoch,
               logger_kwargs=logger_kwargs)
