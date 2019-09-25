@@ -1,6 +1,6 @@
 # Streamlined-Off-Policy Pytorch Implementation
 Streamlined-Off-Policy Pytorch Implementation, based on the OpenAI Spinup documentation and some of its code base. This SOP implementation is based on the OpenAI spinningup repo, and uses spinup as a dependency. 
-Currently anonymized for reviewing. 
+Currently anonymized for reviewing. TEST
 
 ## Setup environment:
 To use the code you should first download this repo, and then install spinup:
