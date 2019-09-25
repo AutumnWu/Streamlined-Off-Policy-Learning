@@ -5,7 +5,7 @@ Currently anonymized for reviewing.
 ## Setup environment:
 To use the code you should first download this repo, and then install spinup:
 
-the spinup documentation is here, you should read it to make sure you know the procedure: https://spinningup.openai.com/en/latest/user/installation.html
+The spinup documentation is here, you should read it to make sure you know the procedure: https://spinningup.openai.com/en/latest/user/installation.html
 
 The only difference in installation is you want to install this forked repo, instead of the original repo.
 
