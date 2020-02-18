@@ -16,11 +16,16 @@ Mujoco version is 150
 
 ## Run experiment
 The SOP implementation can be found under `spinup/algos/sop_pytorch/`
+The SOP-IG implementation can be found under `spinup/algos/sop_ig_pytorch/`
 The SAC implementation can be found under `spinup/algos/sac_pytorch/`
 
 Run experiments with pytorch sop:
 
 In the sop_pytorch folder, run the SOP code with `python SOP.py`
+
+Run experiments with pytorch sop-ig: 
+
+In the sop_ig_pytorch folder, run the SOP-IG code with `python sop_invert_grad.py`
 
 Run experiments with pytorch sac: 
 
