@@ -94,7 +94,7 @@ def sop_ere(env_fn, hidden_sizes=[256, 256], seed=0,
               steps_per_epoch=5000, epochs=100, replay_size=int(1e6), gamma=0.99,
               polyak=0.995, lr=3e-4, alpha=0, beta=1.2, batch_size=256, start_steps=10000,
               max_ep_len=1000, save_freq=1, dont_save=False, regularization_weight=1e-3, logger_store_freq=500,
-              auto_alpha=False, use_one_step_version=False,
+              auto_alpha=False,
               update_order='old_first',
               eta_0=0.994, m=900, c_min=5000,
               eta_final=1, no_eta_anneal=False,
@@ -184,22 +184,6 @@ def sop_ere(env_fn, hidden_sizes=[256, 256], seed=0,
     # Experience buffer
     replay_buffer = StagePriorityReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
 
-    """
-    Auto tuning alpha
-    """
-    #remove_entropy = True
-    #auto_alpha = False
-    #if remove_entropy:
-    #    alpha = 0
-    #    target_entropy, log_alpha, alpha_optim = None, None, None
-    #else:
-    #    if auto_alpha:
-    #        target_entropy =  -np.prod(env.action_space.shape).item() # H
-    #        log_alpha = torch.zeros(1, requires_grad=True)
-    #        alpha_optim = optim.Adam([log_alpha], lr=lr)
-    #    else:
-    #        target_entropy, log_alpha, alpha_optim = None, None, None
-
     def test_agent(n=5):
         """
         This will test the agent's performance by running n episodes
@@ -271,107 +255,6 @@ def sop_ere(env_fn, hidden_sizes=[256, 256], seed=0,
 
         # Store experience (observation, action, reward, next observation, done) to replay buffer
         replay_buffer.store(o, a, r, o2, d)
-
-        """
-        one data one update part
-        """
-        if use_one_step_version and replay_buffer.size >= batch_size:
-            # get data from replay buffer
-            batch = replay_buffer.sample_batch(batch_size)
-            obs_tensor = Tensor(batch['obs1'])
-            obs_next_tensor = Tensor(batch['obs2'])
-            acts_tensor = Tensor(batch['acts'])
-            # unsqueeze is to make sure rewards and done tensors are of the shape nx1, instead of n
-            # to prevent problems later
-            rews_tensor = Tensor(batch['rews']).unsqueeze(1)
-            done_tensor = Tensor(batch['done']).unsqueeze(1)
-
-            """
-            now we do a SAC update, following the OpenAI spinup doc
-            check the openai sac document psudocode part for reference
-            line nubmers indicate lines in psudocode part
-            we will first compute each of the losses
-            and then update all the networks in the end
-            """
-            # see line 12: get a_tilda, which is newly sampled action (not action from replay buffer)
-
-            """get q loss"""
-            with torch.no_grad():
-                a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = policy_net.forward(obs_next_tensor, fixed_sigma=True, SOP=True, mod1=True, beta=beta)
-                q1_next = q1_target_net(torch.cat([obs_next_tensor, a_tilda_next], 1))
-                q2_next = q2_target_net(torch.cat([obs_next_tensor, a_tilda_next], 1))
-
-                min_next_q = torch.min(q1_next, q2_next)
-                y_q = rews_tensor + gamma * (1 - done_tensor) * min_next_q
-
-            # JQ = 𝔼(st,at)~D[0.5(Q1(st,at) - r(st,at) - γ(𝔼st+1~p[V(st+1)]))^2]
-            q1_prediction = q1_net(torch.cat([obs_tensor, acts_tensor], 1))
-            q1_loss = mse_criterion(q1_prediction, y_q)
-            q2_prediction = q2_net(torch.cat([obs_tensor, acts_tensor], 1))
-            q2_loss = mse_criterion(q2_prediction, y_q)
-
-            """
-            get policy loss
-            """
-            a_tilda, mean_a_tilda, log_std_a_tilda, log_prob_a_tilda, _, _ = policy_net.forward(obs_tensor, fixed_sigma=True, deterministic=True, SOP=True, mod1=True, beta=beta)
-
-            # see line 12: second equation
-            q1_a_tilda = q1_net(torch.cat([obs_tensor, a_tilda], 1))
-            q2_a_tilda = q2_net(torch.cat([obs_tensor, a_tilda], 1))
-            min_q1_q2_a_tilda = torch.min(q1_a_tilda, q2_a_tilda)
-
-            # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
-            policy_loss = (- min_q1_q2_a_tilda).mean()
-
-            """
-            add policy regularization loss, this is not in openai's minimal version, but
-            they are in the original sac code, see https://github.com/vitchyr/rlkit for reference
-            this part is not necessary but might improve performance
-            NO LONGER USE REGULARIZATION IN SAC ADAPT, rlkit also removed this now
-            """
-            # policy_mean_reg_weight = regularization_weight
-            # policy_std_reg_weight = regularization_weight
-            # mean_reg_loss = policy_mean_reg_weight * (mean_a_tilda ** 2).mean()
-            # std_reg_loss = policy_std_reg_weight * (log_std_a_tilda ** 2).mean()
-            # policy_loss = policy_loss + mean_reg_loss + std_reg_loss
-
-            """
-            alpha loss, update alpha
-            """
-            """if auto_alpha:
-                alpha_loss = -(log_alpha * (log_prob_a_tilda + target_entropy).detach()).mean()
-
-                alpha_optim.zero_grad()
-                alpha_loss.backward()
-                alpha_optim.step()
-
-                alpha = log_alpha.exp().item()
-            else:
-                alpha_loss = 0
-            """
-
-            """update networks"""
-            q1_optimizer.zero_grad()
-            q1_loss.backward()
-            q1_optimizer.step()
-
-            q2_optimizer.zero_grad()
-            q2_loss.backward()
-            q2_optimizer.step()
-
-            policy_optimizer.zero_grad()
-            policy_loss.backward()
-            policy_optimizer.step()
-
-            # see line 16: update target value network with value network
-            soft_update_model1_with_model2(q1_target_net, q1_net, polyak)
-            soft_update_model1_with_model2(q2_target_net, q2_net, polyak)
-
-            # store diagnostic info to logger
-            logger.store(LossPi=policy_loss.item(), LossQ1=q1_loss.item(), LossQ2=q2_loss.item(),
-                         Q1Vals=q1_prediction.detach().numpy(),
-                         Q2Vals=q2_prediction.detach().numpy(),
-                        )
 
         # Super critical, easy to overlook step: make sure to update
         # most recent observation!
@@ -448,34 +331,6 @@ def sop_ere(env_fn, hidden_sizes=[256, 256], seed=0,
 
                 # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
                 policy_loss = (- min_q1_q2_a_tilda).mean()
-
-                """
-                add policy regularization loss, this is not in openai's minimal version, but
-                they are in the original sac code, see https://github.com/vitchyr/rlkit for reference
-                this part is not necessary but might improve performance
-                NO LONGER USE REGULARIZATION IN SAC ADAPT, rlkit also removed this now
-                """
-                # policy_mean_reg_weight = regularization_weight
-                # policy_std_reg_weight = regularization_weight
-                # mean_reg_loss = policy_mean_reg_weight * (mean_a_tilda ** 2).mean()
-                # std_reg_loss = policy_std_reg_weight * (log_std_a_tilda ** 2).mean()
-                # policy_loss = policy_loss + mean_reg_loss + std_reg_loss
-
-                """
-                alpha loss, update alpha
-                """
-                """
-                if auto_alpha:
-                    alpha_loss = -(log_alpha * (log_prob_a_tilda + target_entropy).detach()).mean()
-
-                    alpha_optim.zero_grad()
-                    alpha_loss.backward()
-                    alpha_optim.step()
-
-                    alpha = log_alpha.exp().item()
-                else:
-                    alpha_loss = 0
-                """
 
                 """update networks"""
                 q1_optimizer.zero_grad()
