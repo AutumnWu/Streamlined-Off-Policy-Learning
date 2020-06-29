@@ -18,7 +18,7 @@ The results look similar to the results in the paper
 
 def sop(env_fn, hidden_sizes=[256, 256], seed=0,
               steps_per_epoch=5000, epochs=100, replay_size=int(1e6), gamma=0.99,
-              polyak=0.995, lr=3e-4, alpha=0, beta=1.2, batch_size=256, start_steps=10000,
+              polyak=0.995, lr=3e-4, alpha=0, beta=1, sigma=0.29, batch_size=256, start_steps=10000,
               max_ep_len=1000, save_freq=1, dont_save=False, regularization_weight=1e-3,
               auto_alpha=False,
               logger_kwargs=dict(),):
@@ -135,7 +135,7 @@ def sop(env_fn, hidden_sizes=[256, 256], seed=0,
             o, r, d, ep_ret, ep_len = test_env.reset(), 0, False, 0, 0
             while not (d or (ep_len == max_ep_len)):
                 # Take deterministic actions at test time
-                a = policy_net.get_env_action(o, deterministic=True, fixed_sigma=True, SOP=True, mod1=True, beta=beta)
+                a = policy_net.get_env_action(o, deterministic=True, fixed_sigma=True, sigma=sigma, SOP=True, mod1=True, beta=beta)
                 o, r, d, _ = test_env.step(a)
                 ep_ret += r
                 ep_len += 1
@@ -177,7 +177,7 @@ def sop(env_fn, hidden_sizes=[256, 256], seed=0,
         use the learned policy. 
         """
         if t > start_steps:
-            a = policy_net.get_env_action(o, deterministic=False, fixed_sigma=True, SOP=True, mod1=True, beta=beta)
+            a = policy_net.get_env_action(o, deterministic=False, fixed_sigma=True, sigma=sigma, SOP=True, mod1=True, beta=beta)
         else:
             a = env.action_space.sample()
         # Step the env, get next observation, reward and done signal
@@ -228,7 +228,7 @@ def sop(env_fn, hidden_sizes=[256, 256], seed=0,
 
                 """get q loss"""
                 with torch.no_grad():
-                    a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = policy_net.forward(obs_next_tensor, fixed_sigma=True, SOP=True, mod1=True, beta=beta)
+                    a_tilda_next, _, _, log_prob_a_tilda_next, _, _ = policy_net.forward(obs_next_tensor, fixed_sigma=True, sigma=sigma, SOP=True, mod1=True, beta=beta)
                     q1_next = q1_target_net(torch.cat([obs_next_tensor,a_tilda_next], 1))
                     q2_next = q2_target_net(torch.cat([obs_next_tensor,a_tilda_next], 1))
 
@@ -244,7 +244,7 @@ def sop(env_fn, hidden_sizes=[256, 256], seed=0,
                 """
                 get policy loss
                 """
-                a_tilda, mean_a_tilda, log_std_a_tilda, log_prob_a_tilda, _, _ = policy_net.forward(obs_tensor, fixed_sigma=True, deterministic=True, SOP=True, mod1=True, beta=beta)
+                a_tilda, mean_a_tilda, log_std_a_tilda, log_prob_a_tilda, _, _ = policy_net.forward(obs_tensor, fixed_sigma=True, sigma=sigma, eterministic=True, SOP=True, mod1=True, beta=beta)
 
                 # see line 12: second equation
                 q1_a_tilda = q1_net(torch.cat([obs_tensor,a_tilda],1))

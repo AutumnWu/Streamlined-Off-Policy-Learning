@@ -31,7 +31,7 @@ def sop_ig(env_fn, hidden_sizes=[256, 256], seed=0,
             The environment must satisfy the OpenAI Gym API.
 
         hidden_sizes: number of entries is number of hidden layers
-            each entry in this list indicate the size of that hidden layer.
+            each entry in this list indicate the size of that hidden layer. 
             applies to all networks
 
         seed (int): Seed for random number generators.

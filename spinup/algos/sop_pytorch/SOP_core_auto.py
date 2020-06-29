@@ -198,8 +198,7 @@ class TanhGaussianPolicySOP(Mlp):
         mod1=False,
         mod2=False,
         mod3=False,
-        sigma=None,
-        fixed_sigma_value=0.3
+        sigma=0.29,
         ):
         """
         Get an action that can be used to forward one step in the environment
@@ -223,7 +222,7 @@ class TanhGaussianPolicySOP(Mlp):
                                      mod1=mod1,
                                      mod2=mod2,
                                      mod3=mod3,
-                                     sigma=sigma, fixed_sigma_value=fixed_sigma_value)[0].detach()
+                                     sigma=sigma)[0].detach()
         ## convert action into the form that can put into the env and scale it
 
         action_np = action_tensor.cpu().numpy().reshape(-1)
@@ -240,8 +239,8 @@ class TanhGaussianPolicySOP(Mlp):
             mod1=False,
             mod2=False,
             mod3=False,
-            sigma=None,
-            fixed_sigma_value=0.3
+            sigma=0.29,
+            return_log_prob=True,
     ):
         """
         :param obs: Observation
@@ -255,20 +254,18 @@ class TanhGaussianPolicySOP(Mlp):
             h = self.hidden_activation(fc_layer(h))
         mean = self.last_fc_layer(h)
 
-        if fixed_sigma:
-            if mod2:
-                std = torch.zeros(mean.size()).to(self.device)
-                std += sigma
-            else:
-                std = torch.zeros(mean.size()).to(self.device)
-                std += fixed_sigma_value
-            log_std = None
-            #log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
+        log_mean = mean
 
+         if fixed_sigma:
+            std = torch.zeros(mean.size())
+            std += sigma
+            log_std = None
         else:
             log_std = self.last_fc_log_std(h)
             log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
             std = torch.exp(log_std)
+
+
 
         if SOP:
             zeros = torch.zeros(mean.size()).to(self.device)
